@@ -3,7 +3,7 @@ Kyber Plugins, for Armchair Developer's Kyber for Star Wars Battlefront II: http
 Kyber Plugins can only be used on Kyber Dedicated Servers.
 
 
-# Galactic Co-Op
+## Galactic Co-Op
 Tranforms Galactic Assault into a fully automated Co-Op mode.
 
 * Requirements: [**IOI by Mophead**](https://www.nexusmods.com/starwarsbattlefront22017/mods/3658), I suggest version V7 or newer, to include full bot support. The mod is already included in [**Battlefront Plus**](https://www.nexusmods.com/starwarsbattlefront22017/mods/7592). Battlefront Expanded also includes IOI, but an older version; which doesn't guarantee full bot support on all maps.
