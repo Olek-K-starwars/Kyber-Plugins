@@ -12,21 +12,22 @@ local kitList = require "common/kit_list".Kits
 -- (Adjustable with a command at runtime)
 local maxEnemyBotCount = 20
 
--- The ratio of bots between teams, the way it's used is decided by the Team Balancing Method
--- Do not change unless you know what you're doing
-local botRatio = (2/3)
-
--- The amount of players at which enemy bots reach the max amount (on default team balancing)
--- I reccomend you set this to your Kyber Server max player count, unless you know what you're doing
-local maxPlayerCount = 12
-
 -- The method used for bot balancing
 -- default -- (RECCOMENDED) is a method that uses botRatio and some other calculations to try to adjust the proper bot count for both teams depending on the player amount. It will reach maxEnemyBotCount, once the server reaches maxPlayerCount.
--- simple -- Always sets the enemy bot amount to the amount defined in maxEnemyBotCount, and strictly follows the botRatio for team ratios (so for maxEnemyBotCount=32, the fight will always be 20v32, regardless of the player count.)
--- identical -- Balances both teams to the maxEnemyBotCount. Does NOT use botRatio.
+-- simple -- Always keeps the enemy bot amount to the amount defined in maxEnemyBotCount, and strictly follows the botRatio for team ratios
+-- old -- Uses the old balancing method (from V0.6 and older). It's very outdated; strictly follows botRatio while dynamically adjusting the bot counts for both teams. The amount of enemy bots will reach maxEnemyBotCount once the player count achieves maxPlayerCount. The modern equivalent is now called "deafult"
+-- identical -- Always balances both teams to maxEnemyBotCount. Does NOT use botRatio.
 -- nil -- Turns off balancing, not spawning any bots
 -- (Adjustable with a command at runtime) W.I.P
 local teamBalancingMethod = "default"
+
+-- The ratio of bots between teams, the way it's used is decided by the Team Balancing Method
+-- Do not change unless you know what you're doing
+local botRatio = (5/8)
+
+-- A value used by team balancing; the amount of players at which enemy bots reach the max amount (on default team balancing)
+-- Set it to your Kyber Server's Max Player Count if you don't know what to do
+local maxPlayerCount = 8
 
 -- Makes the player team alternate between 1 and 2, instead of being picked radomly
 -- This prevents one side being played multiple times in a row 
@@ -48,15 +49,33 @@ local playerKillReward = 1500
 
 -- Determines the aim noise of the bots, basically "bot difficulty"
 -- Easy: 12, Medium: 9, Hard: 6, Knight: 3, Master: 1, Aimbot: 0
+-- Setting this value to nil will disable the Bot AimNoiseScale Fix, reenabling the Bot Personalities built into IOI, making bots have a diffrent Aim Noise Scale through the entire lenght of the match, that cannot be adjusted by hosts/plugins
 -- (Adjustable with a command at runtime)
-local aimNoiseScale = 5
+local aimNoiseScale = 4
+
+-- Determines how long it will take a bot to turn around (turning speed)
+-- The higher the value, the faster bots rotate
+-- The deafult value in IOI is 0.25
+local aimLapTime = 3.5
+
+-- Determines the reaction time of bots (in seconds)
+-- The deafult value in IOI is 0.25
+local reactionTime = 0.25
 
 -- A value in percentage that defines how much worse the friendly bot's aim is
 -- Setting this value to 0 will make friendly bots have the exact same noise scale as enemy bots
-local worseFriendlyAimPercentage = 30
+local worseFriendlyAimPercentage = 50
+
+-- The amount of time it take a bot to respawn (in seconds)
+-- The deafult in BF+ is 9
+local respawnTime = 15
+
+-- The amount (in seconds) that bots spawn quicker in per player
+-- Setting it to 0 wil disable the feature
+local decreaseRespawnTimePerPlayer = 0
 
 
-	-- OTHER SETTINGS --
+	-- GAME START SETTINGS --
 
 -- Determines if the game starts automatically or not
 local gameAutoStart = true
@@ -107,7 +126,6 @@ function MovePlayerToCorrectTeam(player)
     if player.team ~= PlayerTeam then
         player:SetTeam(PlayerTeam)
     end
-	BalanceBots()
 end
 
 -- Moves all online players to the correct team, credits to Geeknasty: https://github.com/Geeknasty
@@ -145,7 +163,6 @@ function FillBots(team, amount)
 	-- Mainly because it doesn't spam the logs
 end
 
-
 	-- START GAME FUNCTIONS --
 
 
@@ -154,7 +171,6 @@ function _StartGame()
 	Console.Execute("Kyber.StartGame")
 	gameRunning = true
 	startTimeoutRunning = false
-	BalanceBots()
 end
 
 -- WAY too complicated GameStart logic
@@ -215,8 +231,13 @@ end
 
 
 -- Applies bot settings, including Hero Spawn Percentage and Aim Noise Scale
+-- Gets called on Level:Loaded and during some Custom Console Commands
 function BotSettings()
 	Console.GetSettings("AutoPlayers").HeroSpawnProbability_Gameplay = (heroSpawnPercentage / 100)
+	Console.GetSettings("AutoPlayers").AimLapTime = aimLapTime
+	Console.GetSettings("AutoPlayers").LofReactionTimeS = reactionTime
+	Console.GetSettings("AutoPlayers").RespawnDelay = (respawnTime - 3) -- Subtracting 3 because GA has an extra 3 seconds on top of RespawnDelay
+	
 	CalculateBotAim()
 end
 
@@ -234,55 +255,47 @@ function CalculateBotAim()
 	
 	-- Applies worseFriendlyAimPercentage onto the Aim Noise Scale for the enemy tean
 	variable = ("AimNoiseScaleTeam" .. PlayerTeam)
-	Console.GetSettings("AutoPlayers")[variable] = (worseFriendlyAimPercentage / 100) -- deviding by 100, because the config value is in percents while Kyber accepts fractions
+	Console.GetSettings("AutoPlayers")[variable] = ((worseFriendlyAimPercentage / 100) + 1) -- deviding by 100, because the config value is in percents while Kyber accepts fractions
 end
 
 -- This function chooses the correct Team Balancing Method and spawns the correct amount of bots accordingly.
 function BalanceBots()
-	if teamBalancingMethod == "default" then -- Deafult balancing method
-		local PlayerCount = GetPlayerCount()
-		local enemyAmount = maxEnemyBotCount - (maxPlayerCount - PlayerCount)
-		local friendlyBotCount = maxPlayerCount * botRatio
-		
-		friendlyBotCount = _AdvanceFriendlyBots(friendlyBotCount)
-		
-		if PlayerCount > maxPlayerCount then
-			enemyAmount = maxEnemyBotCount
-			friendlyBotCount = (maxPlayerCount * botRatio) - (PlayerCount - maxPlayerCount)
+	local playerCount = GetPlayerCount()
+	
+	-- Deafult balancing method
+	if teamBalancingMethod == "default" then
+		if playerCount <= maxPlayerCount then
+			local desiredFriendlyBotCount = math.floor(math.floor((maxEnemyBotCount * botRatio) + 0.5) - ((maxPlayerCount - playerCount) * 0.5))
+			
+			FillBots(PlayerTeam, (desiredFriendlyBotCount - playerCount))
+			FillBots(EnemyTeam(), math.min(maxEnemyBotCount - (maxPlayerCount - playerCount), maxEnemyBotCount))
+		else
+			FillBots(PlayerTeam, (math.floor((maxEnemyBotCount * botRatio) + 0.5) - playerCount))
+			FillBots(EnemyTeam(), enemyBotCount)
 		end
 		
-		FillBots(EnemyTeam(), enemyAmount)
-		FillBots(PlayerTeam, friendlyBotCount)
+	-- Simpler but outdated balancing method, uses maxEnemyBotCount and maxPlayerCount, while strictly following botRatio
+	elseif teamBalancingMethod == "old" then
+		if playerCount <= maxPlayerCount then
+			FillBots(EnemyTeam(), (maxEnemyBotCount - (maxPlayerCount - playerCount)))
+			FillBots(PlayerTeam, ((math.floor((maxEnemyBotCount * botRatio) + 0.5)) - (maxPlayerCount - playerCount)))
+		else
+			FillBots(PlayerTeam, (math.floor((maxEnemyBotCount * botRatio) + 0.5) - playerCount))
+			FillBots(EnemyTeam(), enemyBotCount)
+		end
 		
-	elseif teamBalancingMethod == "simple" then -- Simpler balancing method
+	-- Even simpler balancing method; strictly follows both maxEnemyBotCount and botRatio
+	elseif teamBalancingMethod == "simple" then
 		FillBots(EnemyTeam(), maxEnemyBotCount)
-		FillBots(PlayerTeam, ((maxPlayerCount * botRatio) + maxPlayerCount) - GetPlayerCount() )
+		FillBots(PlayerTeam, (math.floor((maxEnemyBotCount * botRatio) + 0.5) - (maxPlayerCount - playerCount)))
 		
-	elseif teamBalancingMethod == "identical" then -- Identical Team balancing method
+	-- Identical Team balancing method; doesn't use botRatio, strictly follows maxEnemyBotCount for both teams
+	elseif teamBalancingMethod == "identical" then
 		FillBots(EnemyTeam(), maxEnemyBotCount)
-		FillBots(PlayerTeam, maxEnemyBotCount - GetPlayerCount() )
+		FillBots(PlayerTeam, maxEnemyBotCount - playerCount)
 	end
 	
 	-- You can learn more about the diffrent balancing methods in the config found at the beggening of this file.
-end
-
--- This function is only called internally by BalanceBots() when using the Deafult balancing method.
--- This is just an extra step that the Deafult balancing method uses
--- To put it simply; an extra bot for every 2 players.
-function _AdvanceFriendlyBots(friendlyBotCount)
-	local count = friendlyBotCount
-	local current = maxPlayerCount - GetPlayerCount()
-	
-	while true do
-        if current < 0 then
-            break
-        else
-            current = current - 2
-        end
-        count = count + 1
-    end
-	
-    return count - 1
 end
 
 
@@ -359,7 +372,6 @@ EventManager.Listen("Level:Loaded", function(levelName, gameModeId)
 	SetTimeout(function()
 		MoveAllPlayersToCorrectTeam()
 	end, (gameStartDelay / 2) )	
-	
 	-- Running it twice to ensure that everyone is on the correct team (sometimes it fails)
 	SetTimeout(function()
 		MoveAllPlayersToCorrectTeam()
@@ -368,7 +380,7 @@ EventManager.Listen("Level:Loaded", function(levelName, gameModeId)
 	-- Spawning in bots
 	SetTimeout(function()
 	BalanceBots()
-	end, 5)
+	end, gameStartDelay + 2) -- Spawning them right as the game starts, so they can't run out of the spawn before normal players
 	
 	StartGame() -- Running game start logic
 end)
@@ -378,13 +390,17 @@ EventManager.Listen("ServerPlayer:Joined", function(player)
 	SetTimeout(function()
 		MovePlayerToCorrectTeam(player) -- Moving the player to the correct team (with a 5 second delay for safety reasons)
 	end, 5.0)
-	BalanceBots() -- Balancing bots to the correct amount (adapting to the new player count)
+	if gameRunning then
+		BalanceBots() -- Balancing bots to the correct amount (adapting to the new player count)
+	end
 	StartGame(true) -- Starting the game
 end)
 
 -- This event fires when a player leaves the game
 EventManager.Listen("ServerPlayer:Disconnect", function(player)
-	BalanceBots() -- W.I.P Balancing bots when a player leaves
+	if gameRunning then
+		BalanceBots() -- Balancing bots when a player leaves
+	end
 end)
 
 -- This event fires when a player spanws
@@ -467,4 +483,15 @@ Console.Register("Galactic", "HeroSpawnPercentage", "Lets you change the Hero Sp
 	SetTimeout(function()
 		BotSettings()
 	end, 60.0)	
+end)
+
+Console.Register("Galactic", "WorseFriendlyAimNoise", "Changes the aim noise scale of friendly Autoplayers.", {}, function(self, args)
+	local scale = tonumber(args)
+	
+	if scale == nil then
+		return
+	end
+	
+	worseFriendlyAimPercentage = scale
+	CalculateBotAim()
 end)
